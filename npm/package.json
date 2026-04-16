@@ -1,0 +1,16 @@
+{
+  "name": "sidedoor",
+  "version": "0.1.0",
+  "description": "Open a sidedoor to your localhost.",
+  "bin": {
+    "sidedoor": "./index.js"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/sidedoor-run/sidedoor.git"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
