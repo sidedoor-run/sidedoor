@@ -2,11 +2,15 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net"
+	"net/http"
+	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -59,29 +63,126 @@ func (c *wsNetConn) SetDeadline(_ time.Time) error      { return nil }
 func (c *wsNetConn) SetReadDeadline(_ time.Time) error  { return nil }
 func (c *wsNetConn) SetWriteDeadline(_ time.Time) error { return nil }
 
-func main() {
-	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: sidedoor <port> [--subdomain <name>]")
+func tokenPath() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".sidedoor", "token")
+}
+
+func loadToken() string {
+	b, err := os.ReadFile(tokenPath())
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
+}
+
+func saveToken(token string) error {
+	path := tokenPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return err
+	}
+	return os.WriteFile(path, []byte(token), 0600)
+}
+
+func authURL() string {
+	if u := os.Getenv("SIDEDOOR_AUTH_URL"); u != "" {
+		return u
+	}
+	return "https://auth.sidedoor.run"
+}
+
+func runAuth() {
+	base := authURL()
+
+	resp, err := http.PostForm(base+"/oauth/device/code", url.Values{
+		"client_id": {"sidedoor-cli"},
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "\n  error reaching auth server: %v\n\n", err)
+		os.Exit(1)
+	}
+	defer resp.Body.Close()
+
+	var code struct {
+		DeviceCode      string `json:"device_code"`
+		UserCode        string `json:"user_code"`
+		VerificationURI string `json:"verification_uri"`
+		ExpiresIn       int    `json:"expires_in"`
+		Interval        int    `json:"interval"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&code); err != nil {
+		fmt.Fprintf(os.Stderr, "\n  error: %v\n\n", err)
 		os.Exit(1)
 	}
 
-	port := os.Args[1]
-	subdomain := ""
-	for i, arg := range os.Args {
-		if arg == "--subdomain" && i+1 < len(os.Args) {
-			subdomain = os.Args[i+1]
+	fmt.Printf("\n  Open this URL in your browser:\n\n")
+	fmt.Printf("    %s\n\n", code.VerificationURI)
+	fmt.Printf("  Enter code: %s\n\n", code.UserCode)
+
+	interval := code.Interval
+	if interval == 0 {
+		interval = 5
+	}
+
+	for {
+		time.Sleep(time.Duration(interval) * time.Second)
+
+		r, err := http.PostForm(base+"/oauth/device/token", url.Values{
+			"grant_type":  {"urn:ietf:params:oauth:grant-type:device_code"},
+			"device_code": {code.DeviceCode},
+			"client_id":   {"sidedoor-cli"},
+		})
+		if err != nil {
+			continue
+		}
+
+		var result struct {
+			AccessToken string `json:"access_token"`
+			Error       string `json:"error"`
+		}
+		json.NewDecoder(r.Body).Decode(&result)
+		r.Body.Close()
+
+		if result.AccessToken != "" {
+			if err := saveToken(result.AccessToken); err != nil {
+				fmt.Fprintf(os.Stderr, "\n  error saving token: %v\n\n", err)
+				os.Exit(1)
+			}
+			fmt.Printf("  Authenticated. You're all set.\n\n")
+			return
+		}
+
+		if result.Error == "access_denied" || result.Error == "expired_token" {
+			fmt.Fprintf(os.Stderr, "\n  auth failed: %s\n\n", result.Error)
+			os.Exit(1)
 		}
 	}
+}
+
+func main() {
+	if len(os.Args) < 2 {
+		fmt.Fprintln(os.Stderr, "usage: sidedoor <port>")
+		fmt.Fprintln(os.Stderr, "       sidedoor auth")
+		os.Exit(1)
+	}
+
+	if os.Args[1] == "auth" {
+		runAuth()
+		return
+	}
+
+	port := os.Args[1]
 
 	relayURL := os.Getenv("SIDEDOOR_RELAY")
 	if relayURL == "" {
 		relayURL = "wss://sidedoor.run/sidedoor/connect"
 	}
 
-	connect(relayURL, port, subdomain, 0)
+	token := loadToken()
+	connect(relayURL, port, token, 0)
 }
 
-func connect(relayURL, port, subdomain string, attempt int) {
+func connect(relayURL, port, token string, attempt int) {
 	if attempt == 0 {
 		fmt.Println("\n  sidedoor connecting...\n")
 	}
@@ -93,15 +194,19 @@ func connect(relayURL, port, subdomain string, attempt int) {
 	})
 	if err != nil {
 		backoff(attempt)
-		connect(relayURL, port, subdomain, attempt+1)
+		connect(relayURL, port, token, attempt+1)
 		return
 	}
 
 	netConn := newWSNetConn(ctx, wsConn)
 
-	if _, err := netConn.Write([]byte(subdomain + "\n")); err != nil {
+	handshake := "\n"
+	if token != "" {
+		handshake = "token:" + token + "\n"
+	}
+	if _, err := netConn.Write([]byte(handshake)); err != nil {
 		backoff(attempt)
-		connect(relayURL, port, subdomain, attempt+1)
+		connect(relayURL, port, token, attempt+1)
 		return
 	}
 
@@ -110,7 +215,7 @@ func connect(relayURL, port, subdomain string, attempt int) {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "  relay error: %v\n", err)
 		backoff(attempt)
-		connect(relayURL, port, subdomain, attempt+1)
+		connect(relayURL, port, token, attempt+1)
 		return
 	}
 	msg := strings.TrimSpace(string(buf[:n]))
@@ -121,7 +226,7 @@ func connect(relayURL, port, subdomain string, attempt int) {
 	session, err := yamux.Client(netConn, cfg)
 	if err != nil {
 		backoff(attempt)
-		connect(relayURL, port, subdomain, attempt+1)
+		connect(relayURL, port, token, attempt+1)
 		return
 	}
 	defer session.Close()
@@ -160,7 +265,7 @@ func connect(relayURL, port, subdomain string, attempt int) {
 	delay := backoffDuration(attempt)
 	fmt.Printf("\n  disconnected — reconnecting in %.0fs...\n\n", delay.Seconds())
 	time.Sleep(delay)
-	connect(relayURL, port, subdomain, attempt+1)
+	connect(relayURL, port, token, attempt+1)
 }
 
 func handleStream(stream net.Conn, port string) {
