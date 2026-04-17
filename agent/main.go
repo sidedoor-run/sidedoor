@@ -88,7 +88,7 @@ func authURL() string {
 	if u := os.Getenv("SIDEDOOR_AUTH_URL"); u != "" {
 		return u
 	}
-	return "https://api.sidedoor.run"
+	return "https://sidedoor-eight.vercel.app"
 }
 
 func runAuth() {
