@@ -94,7 +94,7 @@ func authURL() string {
 func runAuth() {
 	base := authURL()
 
-	resp, err := http.PostForm(base+"/oauth/device/code", url.Values{
+	resp, err := http.PostForm(base+"/api/oauth/device/code", url.Values{
 		"client_id": {"sidedoor-cli"},
 	})
 	if err != nil {
@@ -128,7 +128,7 @@ func runAuth() {
 	for {
 		time.Sleep(time.Duration(interval) * time.Second)
 
-		r, err := http.PostForm(base+"/oauth/device/token", url.Values{
+		r, err := http.PostForm(base+"/api/oauth/device/token", url.Values{
 			"grant_type":  {"urn:ietf:params:oauth:grant-type:device_code"},
 			"device_code": {code.DeviceCode},
 			"client_id":   {"sidedoor-cli"},
