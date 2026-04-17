@@ -1,5 +1,5 @@
 {
-  "name": "sidedoor",
+  "name": "@sidedoor/cli",
   "version": "0.1.0",
   "description": "Open a sidedoor to your localhost.",
   "bin": {

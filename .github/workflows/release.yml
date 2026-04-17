@@ -43,6 +43,6 @@ jobs:
           cd npm && npm version $TAG --no-git-tag-version --allow-same-version
 
       - name: publish npm
-        run: cd npm && npm publish
+        run: cd npm && npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
