@@ -88,7 +88,7 @@ func authURL() string {
 	if u := os.Getenv("SIDEDOOR_AUTH_URL"); u != "" {
 		return u
 	}
-	return "https://auth.sidedoor.run"
+	return "https://api.sidedoor.run"
 }
 
 func runAuth() {
