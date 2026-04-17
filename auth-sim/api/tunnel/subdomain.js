@@ -1,4 +1,4 @@
-export default function handler(req, res) {
+module.exports = function handler(req, res) {
   if (req.method !== 'GET') return res.status(405).end()
 
   const auth = req.headers.authorization || ''

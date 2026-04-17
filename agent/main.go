@@ -103,6 +103,7 @@ func runAuth() {
 	}
 	defer resp.Body.Close()
 
+	body, _ := io.ReadAll(resp.Body)
 	var code struct {
 		DeviceCode      string `json:"device_code"`
 		UserCode        string `json:"user_code"`
@@ -110,8 +111,8 @@ func runAuth() {
 		ExpiresIn       int    `json:"expires_in"`
 		Interval        int    `json:"interval"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&code); err != nil {
-		fmt.Fprintf(os.Stderr, "\n  error: %v\n\n", err)
+	if err := json.Unmarshal(body, &code); err != nil {
+		fmt.Fprintf(os.Stderr, "\n  error: %v\n  response: %s\n\n", err, string(body))
 		os.Exit(1)
 	}
 

@@ -1,9 +1,9 @@
-export default function handler(req, res) {
+module.exports = function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).end()
 
-  const base = process.env.VERCEL_URL
-    ? `https://${process.env.VERCEL_URL}`
-    : 'http://localhost:3000'
+  const base = process.env.VERCEL_PROJECT_PRODUCTION_URL
+    ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`
+    : `https://${process.env.VERCEL_URL}`
 
   res.json({
     device_code: 'sim_device_code',
