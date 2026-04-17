@@ -166,14 +166,6 @@ func connect(relayURL, port, subdomain string, attempt int) {
 func handleStream(stream net.Conn, port string) {
 	defer stream.Close()
 
-	var first [1]byte
-	stream.SetDeadline(time.Now().Add(55 * time.Second))
-	n, err := stream.Read(first[:])
-	stream.SetDeadline(time.Time{})
-	if err != nil || n == 0 {
-		return
-	}
-
 	local, err := net.DialTimeout("tcp", "localhost:"+port, 5*time.Second)
 	if err != nil {
 		log.Printf("local dial error: %v", err)
@@ -181,10 +173,6 @@ func handleStream(stream net.Conn, port string) {
 		return
 	}
 	defer local.Close()
-
-	if _, err := local.Write(first[:n]); err != nil {
-		return
-	}
 
 	buf1 := make([]byte, 64*1024)
 	buf2 := make([]byte, 64*1024)
