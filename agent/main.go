@@ -207,6 +207,11 @@ func main() {
 	}
 
 	port := os.Args[1]
+	if _, err := fmt.Sscanf(port, "%d", new(int)); err != nil {
+		fmt.Fprintf(os.Stderr, "  error: '%s' is not a valid port number\n", port)
+		fmt.Fprintln(os.Stderr, "  usage: sidedoor <port>")
+		os.Exit(1)
+	}
 
 	relayURL := os.Getenv("SIDEDOOR_RELAY")
 	if relayURL == "" {
