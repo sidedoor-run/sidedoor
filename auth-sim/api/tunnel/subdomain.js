@@ -9,5 +9,8 @@ module.exports = function handler(req, res) {
     return res.status(401).json({ error: 'invalid_token' })
   }
 
-  res.json({ subdomain: process.env.SIM_SUBDOMAIN || 'jonathan' })
+  res.json({
+    subdomain: process.env.SIM_SUBDOMAIN || 'jonathan',
+    domain: process.env.SIM_DOMAIN || 'sidedoor.run',
+  })
 }

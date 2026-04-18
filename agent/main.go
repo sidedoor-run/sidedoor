@@ -214,6 +214,10 @@ func main() {
 	}
 
 	token := loadToken()
+	if token == "" {
+		fmt.Fprintf(os.Stderr, "\n  not authenticated — run: sidedoor auth\n\n")
+		os.Exit(1)
+	}
 	fmt.Println("\n  sidedoor connecting...\n")
 	pinnedMachine := ""
 	for attempt := 0; ; attempt++ {
