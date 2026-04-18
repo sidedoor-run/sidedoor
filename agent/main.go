@@ -10,7 +10,9 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -91,6 +93,19 @@ func authURL() string {
 	return "https://sidedoor-eight.vercel.app"
 }
 
+func openBrowser(url string) {
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "darwin":
+		cmd = exec.Command("open", url)
+	case "windows":
+		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
+	default:
+		cmd = exec.Command("xdg-open", url)
+	}
+	cmd.Start()
+}
+
 func runAuth() {
 	base := authURL()
 
@@ -116,8 +131,8 @@ func runAuth() {
 		os.Exit(1)
 	}
 
-	fmt.Printf("\n  Open this URL in your browser:\n\n")
-	fmt.Printf("    %s\n\n", code.VerificationURI)
+	openBrowser(code.VerificationURI)
+	fmt.Printf("\n  If the browser didn't open, visit:\n    %s\n\n", code.VerificationURI)
 	fmt.Printf("  Enter code: %s\n\n", code.UserCode)
 
 	interval := code.Interval
@@ -160,15 +175,34 @@ func runAuth() {
 	}
 }
 
+func runLogout() {
+	path := tokenPath()
+	if err := os.Remove(path); err != nil {
+		if os.IsNotExist(err) {
+			fmt.Println("  not logged in")
+			return
+		}
+		fmt.Fprintf(os.Stderr, "  error: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println("  logged out")
+}
+
 func main() {
 	if len(os.Args) < 2 {
 		fmt.Fprintln(os.Stderr, "usage: sidedoor <port>")
 		fmt.Fprintln(os.Stderr, "       sidedoor auth")
+		fmt.Fprintln(os.Stderr, "       sidedoor logout")
 		os.Exit(1)
 	}
 
 	if os.Args[1] == "auth" {
 		runAuth()
+		return
+	}
+
+	if os.Args[1] == "logout" {
+		runLogout()
 		return
 	}
 
@@ -180,23 +214,38 @@ func main() {
 	}
 
 	token := loadToken()
-	connect(relayURL, port, token, 0)
+	fmt.Println("\n  sidedoor connecting...\n")
+	pinnedMachine := ""
+	for attempt := 0; ; attempt++ {
+		nextMachine, err := tryConnect(relayURL, port, token, pinnedMachine)
+		if err != nil {
+			if err.Error() == "fatal" {
+				os.Exit(1)
+			}
+		}
+		if nextMachine != "" {
+			pinnedMachine = nextMachine
+		}
+		delay := backoffDuration(attempt)
+		fmt.Printf("\n  disconnected — reconnecting in %.0fs...\n\n", delay.Seconds())
+		time.Sleep(delay)
+	}
 }
 
-func connect(relayURL, port, token string, attempt int) {
-	if attempt == 0 {
-		fmt.Println("\n  sidedoor connecting...\n")
-	}
-
+func tryConnect(relayURL, port, token, pinnedMachine string) (string, error) {
 	ctx := context.Background()
 
-	wsConn, _, err := websocket.Dial(ctx, relayURL, &websocket.DialOptions{
+	dialOpts := &websocket.DialOptions{
 		CompressionMode: websocket.CompressionDisabled,
-	})
+	}
+	if pinnedMachine != "" {
+		dialOpts.HTTPHeader = http.Header{
+			"Fly-Force-Instance-Id": {pinnedMachine},
+		}
+	}
+	wsConn, _, err := websocket.Dial(ctx, relayURL, dialOpts)
 	if err != nil {
-		backoff(attempt)
-		connect(relayURL, port, token, attempt+1)
-		return
+		return "", err
 	}
 
 	netConn := newWSNetConn(ctx, wsConn)
@@ -206,38 +255,43 @@ func connect(relayURL, port, token string, attempt int) {
 		handshake = "token:" + token + "\n"
 	}
 	if _, err := netConn.Write([]byte(handshake)); err != nil {
-		backoff(attempt)
-		connect(relayURL, port, token, attempt+1)
-		return
+		wsConn.Close(websocket.StatusAbnormalClosure, "")
+		return "", err
 	}
 
 	buf := make([]byte, 512)
 	n, err := netConn.Read(buf)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "  relay error: %v\n", err)
-		backoff(attempt)
-		connect(relayURL, port, token, attempt+1)
-		return
+		wsConn.Close(websocket.StatusAbnormalClosure, "")
+		return "", err
 	}
 	msg := strings.TrimSpace(string(buf[:n]))
+
+	if strings.HasPrefix(msg, "error:") {
+		fmt.Fprintf(os.Stderr, "  error: %s\n", strings.TrimPrefix(msg, "error:"))
+		wsConn.Close(websocket.StatusNormalClosure, "")
+		return "", fmt.Errorf("fatal")
+	}
 
 	cfg := yamux.DefaultConfig()
 	cfg.MaxStreamWindowSize = 16 * 1024 * 1024
 	cfg.LogOutput = io.Discard
 	session, err := yamux.Client(netConn, cfg)
 	if err != nil {
-		backoff(attempt)
-		connect(relayURL, port, token, attempt+1)
-		return
+		wsConn.Close(websocket.StatusAbnormalClosure, "")
+		return "", err
 	}
 	defer session.Close()
 
-	if strings.HasPrefix(msg, "error:") {
-		fmt.Fprintf(os.Stderr, "  error: %s\n", strings.TrimPrefix(msg, "error:"))
-		os.Exit(1)
+	parts := strings.SplitN(strings.TrimPrefix(msg, "ok:"), "|", 2)
+	publicURL := parts[0]
+	machineID := ""
+	for _, p := range parts[1:] {
+		if strings.HasPrefix(p, "machine:") {
+			machineID = strings.TrimPrefix(p, "machine:")
+		}
 	}
 
-	publicURL := strings.TrimPrefix(msg, "ok:")
 	fmt.Printf("  Local    http://localhost:%s\n", port)
 	fmt.Printf("  Public   %s\n", publicURL)
 	fmt.Println("\n  ctrl+c to stop\n")
@@ -262,11 +316,7 @@ func connect(relayURL, port, token string, attempt int) {
 		}
 		go handleStream(stream, port)
 	}
-
-	delay := backoffDuration(attempt)
-	fmt.Printf("\n  disconnected — reconnecting in %.0fs...\n\n", delay.Seconds())
-	time.Sleep(delay)
-	connect(relayURL, port, token, attempt+1)
+	return machineID, nil
 }
 
 func handleStream(stream net.Conn, port string) {
