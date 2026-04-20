@@ -21,6 +21,8 @@ import (
 	"github.com/hashicorp/yamux"
 )
 
+var version = "dev"
+
 type wsNetConn struct {
 	ctx      context.Context
 	conn     *websocket.Conn
@@ -200,6 +202,11 @@ func main() {
 		fmt.Fprintln(os.Stderr, "       sidedoor auth")
 		fmt.Fprintln(os.Stderr, "       sidedoor logout")
 		os.Exit(1)
+	}
+
+	if os.Args[1] == "--version" || os.Args[1] == "version" {
+		fmt.Println(version)
+		return
 	}
 
 	if os.Args[1] == "auth" {

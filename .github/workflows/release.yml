@@ -19,13 +19,14 @@ jobs:
 
       - name: build binaries
         run: |
+          TAG=${GITHUB_REF_NAME#v}
           mkdir -p dist
           cd agent
-          GOOS=darwin  GOARCH=amd64 go build -ldflags="-s -w" -o ../dist/sidedoor_darwin_amd64
-          GOOS=darwin  GOARCH=arm64 go build -ldflags="-s -w" -o ../dist/sidedoor_darwin_arm64
-          GOOS=linux   GOARCH=amd64 go build -ldflags="-s -w" -o ../dist/sidedoor_linux_amd64
-          GOOS=linux   GOARCH=arm64 go build -ldflags="-s -w" -o ../dist/sidedoor_linux_arm64
-          GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -o ../dist/sidedoor_windows_amd64.exe
+          GOOS=darwin  GOARCH=amd64 go build -ldflags="-s -w -X main.version=${TAG}" -o ../dist/sidedoor_darwin_amd64
+          GOOS=darwin  GOARCH=arm64 go build -ldflags="-s -w -X main.version=${TAG}" -o ../dist/sidedoor_darwin_arm64
+          GOOS=linux   GOARCH=amd64 go build -ldflags="-s -w -X main.version=${TAG}" -o ../dist/sidedoor_linux_amd64
+          GOOS=linux   GOARCH=arm64 go build -ldflags="-s -w -X main.version=${TAG}" -o ../dist/sidedoor_linux_arm64
+          GOOS=windows GOARCH=amd64 go build -ldflags="-s -w -X main.version=${TAG}" -o ../dist/sidedoor_windows_amd64.exe
 
       - name: create github release
         uses: softprops/action-gh-release@v2

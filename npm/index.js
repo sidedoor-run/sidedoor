@@ -38,8 +38,15 @@ function download() {
   })
 }
 
+function currentBinaryVersion() {
+  if (!existsSync(BIN_PATH)) return null
+  const { stdout, status } = spawnSync(BIN_PATH, ['--version'], { encoding: 'utf8' })
+  if (status !== 0) return null
+  return stdout.trim()
+}
+
 async function main() {
-  if (!existsSync(BIN_PATH)) await download()
+  if (currentBinaryVersion() !== VERSION) await download()
   const { status } = spawnSync(BIN_PATH, process.argv.slice(2), { stdio: 'inherit' })
   process.exit(status ?? 1)
 }
