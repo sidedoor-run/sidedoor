@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-const { spawnSync } = require('child_process')
+const { spawn, spawnSync } = require('child_process')
 const { existsSync, mkdirSync, chmodSync, createWriteStream } = require('fs')
 const { join } = require('path')
 const { homedir } = require('os')
@@ -47,8 +47,17 @@ function currentBinaryVersion() {
 
 async function main() {
   if (currentBinaryVersion() !== VERSION) await download()
-  const { status } = spawnSync(BIN_PATH, process.argv.slice(2), { stdio: 'inherit' })
-  process.exit(status ?? 1)
+
+  const child = spawn(BIN_PATH, process.argv.slice(2), { stdio: 'inherit' })
+
+  // Forward signals so closing the terminal or ctrl+c kills the binary too
+  for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
+    process.on(sig, () => child.kill(sig))
+  }
+
+  child.on('exit', (code, signal) => {
+    process.exit(signal ? 1 : (code ?? 1))
+  })
 }
 
 main().catch(err => {
