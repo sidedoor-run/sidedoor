@@ -225,24 +225,34 @@ func main() {
 	}
 	fmt.Println("\n  sidedoor connecting...\n")
 	pinnedMachine := ""
-	for attempt := 0; ; attempt++ {
+	consecutiveFailures := 0
+	for {
 		nextMachine, err := tryConnect(relayURL, port, token, pinnedMachine)
+
 		if err != nil {
 			if err.Error() == "fatal" {
 				os.Exit(1)
 			}
+			// Failed to connect — back off
+			consecutiveFailures++
+		} else {
+			// Was connected (dropped cleanly or health check) — reconnect immediately
+			consecutiveFailures = 0
 		}
+
 		if nextMachine == "reset" {
-			// Health check failed — clear machine pin and reset backoff so we
-			// reconnect in 1s, not after a long accumulated delay.
 			pinnedMachine = ""
-			attempt = 0
 		} else if nextMachine != "" {
 			pinnedMachine = nextMachine
 		}
-		delay := backoffDuration(attempt)
-		fmt.Printf("\n  reconnecting in %.0fs...\n\n", delay.Seconds())
-		time.Sleep(delay)
+
+		if consecutiveFailures == 0 {
+			fmt.Printf("\n  reconnecting...\n\n")
+		} else {
+			delay := backoffDuration(consecutiveFailures)
+			fmt.Printf("\n  reconnecting in %.0fs...\n\n", delay.Seconds())
+			time.Sleep(delay)
+		}
 	}
 }
 
