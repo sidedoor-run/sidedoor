@@ -232,11 +232,16 @@ func main() {
 				os.Exit(1)
 			}
 		}
-		if nextMachine != "" {
+		if nextMachine == "reset" {
+			// Health check failed — clear machine pin and reset backoff so we
+			// reconnect in 1s, not after a long accumulated delay.
+			pinnedMachine = ""
+			attempt = 0
+		} else if nextMachine != "" {
 			pinnedMachine = nextMachine
 		}
 		delay := backoffDuration(attempt)
-		fmt.Printf("\n  disconnected — reconnecting in %.0fs...\n\n", delay.Seconds())
+		fmt.Printf("\n  reconnecting in %.0fs...\n\n", delay.Seconds())
 		time.Sleep(delay)
 	}
 }
@@ -305,6 +310,7 @@ func tryConnect(relayURL, port, token, pinnedMachine string) (string, error) {
 	fmt.Printf("  Public   %s\n", publicURL)
 	fmt.Println("\n  ctrl+c to stop\n")
 
+	// WebSocket keepalive
 	go func() {
 		t := time.NewTicker(20 * time.Second)
 		defer t.Stop()
@@ -318,6 +324,36 @@ func tryConnect(relayURL, port, token, pinnedMachine string) (string, error) {
 		}
 	}()
 
+	// Health check — verifies the full routing path end-to-end every 30s.
+	// Catches stale Redis entries and cross-region routing failures that are
+	// invisible to the agent (WebSocket alive but HTTP requests silently failing).
+	healthFailed := make(chan struct{}, 1)
+	go func() {
+		client := &http.Client{Timeout: 5 * time.Second}
+		time.Sleep(10 * time.Second) // let things settle after connect
+		t := time.NewTicker(30 * time.Second)
+		defer t.Stop()
+		for range t.C {
+			req, err := http.NewRequest("GET", publicURL, nil)
+			if err != nil {
+				continue
+			}
+			req.Header.Set("X-Sidedoor-Health", "1")
+			resp, err := client.Do(req)
+			if err != nil {
+				// Network-level failure — WebSocket keepalive will handle this
+				continue
+			}
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				fmt.Fprintf(os.Stderr, "\n  tunnel broken — reconnecting...\n")
+				healthFailed <- struct{}{}
+				session.Close() // unblocks session.Accept() below
+				return
+			}
+		}
+	}()
+
 	for {
 		stream, err := session.Accept()
 		if err != nil {
@@ -325,7 +361,14 @@ func tryConnect(relayURL, port, token, pinnedMachine string) (string, error) {
 		}
 		go handleStream(stream, port)
 	}
-	return machineID, nil
+
+	// If health check caused the disconnect, signal caller to clear machine pin
+	select {
+	case <-healthFailed:
+		return "reset", nil
+	default:
+		return machineID, nil
+	}
 }
 
 func handleStream(stream net.Conn, port string) {
@@ -345,10 +388,6 @@ func handleStream(stream net.Conn, port string) {
 	go func() { io.CopyBuffer(local, stream, buf1); done <- struct{}{} }()
 	go func() { io.CopyBuffer(stream, local, buf2); done <- struct{}{} }()
 	<-done
-}
-
-func backoff(attempt int) {
-	time.Sleep(backoffDuration(attempt))
 }
 
 func backoffDuration(attempt int) time.Duration {
