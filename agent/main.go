@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -21,9 +22,10 @@ import (
 )
 
 type wsNetConn struct {
-	ctx    context.Context
-	conn   *websocket.Conn
-	reader io.Reader
+	ctx      context.Context
+	conn     *websocket.Conn
+	reader   io.Reader
+	replaced bool
 }
 
 func newWSNetConn(ctx context.Context, c *websocket.Conn) *wsNetConn {
@@ -45,6 +47,10 @@ func (c *wsNetConn) Read(b []byte) (int, error) {
 		}
 		_, r, err := c.conn.Reader(c.ctx)
 		if err != nil {
+			var closeErr websocket.CloseError
+			if errors.As(err, &closeErr) && closeErr.Code == websocket.StatusGoingAway && closeErr.Reason == "replaced" {
+				c.replaced = true
+			}
 			return 0, err
 		}
 		c.reader = r
@@ -229,6 +235,11 @@ func main() {
 	for {
 		nextMachine, err := tryConnect(relayURL, port, token, pinnedMachine)
 
+		if nextMachine == "replaced" {
+			fmt.Fprintf(os.Stderr, "\n  another sidedoor session started for this account — stopping\n\n")
+			os.Exit(0)
+		}
+
 		if err != nil {
 			if err.Error() == "fatal" {
 				os.Exit(1)
@@ -377,8 +388,11 @@ func tryConnect(relayURL, port, token, pinnedMachine string) (string, error) {
 	case <-healthFailed:
 		return "reset", nil
 	default:
-		return machineID, nil
 	}
+	if netConn.replaced {
+		return "replaced", nil
+	}
+	return machineID, nil
 }
 
 func handleStream(stream net.Conn, port string) {
