@@ -11,21 +11,24 @@
 
 Each tunnel creates: 3–4 goroutines (~30KB), yamux session state (~8KB), WebSocket buffers (~8KB). The `MaxStreamWindowSize = 16MB` is a maximum per stream — not allocated upfront. Actual usage tracks real traffic.
 
-### Per-machine limits (512MB shared-cpu-1x)
+### Per-machine limits (512MB shared-cpu-1x) — realistic numbers
 
-| Workload | Tunnels per machine | Notes |
+The memory math allows far more tunnels than the CPU can actually serve. `shared-cpu-1x` means burst CPU shared with other Fly.io tenants on the same physical host — noisy neighbours directly degrade your users' latency. CPU saturates well before RAM runs out.
+
+| Workload | Comfortable (no degradation) | Degraded but working |
 |---|---|---|
-| All idle | ~7,000 | RAM-bound |
-| Mixed (typical dev use) | ~2,000–4,000 | CPU starts mattering |
-| Heavy traffic (file uploads, streaming) | ~200–500 | yamux windows + copy buffers stack up |
+| Idle tunnels | ~300–500 | ~500–2,000 |
+| Mixed (typical dev use) | ~100–300 | ~300–800 |
+| Heavy traffic (file uploads, streaming) | ~20–50 | ~50–200 |
 
 ### Current fleet (3 machines)
 
-| Workload | Total capacity |
-|---|---|
-| Idle tunnels | ~20,000 |
-| Active (typical) | ~6,000–12,000 |
-| Fly.io hard connection limit | 15,000 (5,000 × 3) |
+| Workload | Comfortable | Degraded but working |
+|---|---|---|
+| Concurrent tunnels | 300–900 | 900–2,400 |
+| Fly.io hard connection limit | 15,000 (5,000 × 3) | — |
+
+The Fly.io connection limit is not the constraint. CPU is. The goroutine leak in `openStream` makes this worse over time — leaked goroutines accumulate under load and slowly eat both CPU and memory until the process restarts.
 
 ---
 
@@ -47,57 +50,53 @@ A single tunnel can receive unlimited inbound traffic with no throttle. One abus
 
 ## Scaling path
 
-### Stage 1 — 0 to 500 concurrent users
-**Current setup handles this. No changes needed.**
+### Stage 1 — 0 to 300 concurrent users
+**Current setup handles this with acceptable quality.**
 
-Cost: ~$15/month (3 × shared-cpu-1x 512MB machines).
+Cost: $9.57/month (3 × shared-cpu-1x 512MB @ $3.19 each).
 
-Action items:
-- Fix goroutine leak in `openStream`
+Action items before launching publicly:
+- Fix goroutine leak in `openStream` — gets worse exactly when you need reliability
 - Add Redis replica for availability
 
-### Stage 2 — 500 to 3,000 concurrent users
-**Upgrade machine size. Add regions.**
+### Stage 2 — 300 to 2,000 concurrent users
+**Upgrade to dedicated CPU. This is the most important single change.**
+
+Shared CPU is the binding constraint — not RAM, not connections. Switching to `performance-1x` eliminates noisy-neighbour degradation and gives consistent latency across all users.
 
 ```bash
-# Upgrade all machines to 2GB RAM
-fly machine update e827942c0050d8 --vm-memory 2048 --app sidedoor-relay
-fly machine update 6e826329b6e087 --vm-memory 2048 --app sidedoor-relay
-fly machine update d8d2474b122958 --vm-memory 2048 --app sidedoor-relay
+fly machine update e827942c0050d8 --vm-cpu-kind performance --vm-cpus 1 --vm-memory 2048 --app sidedoor-relay
+fly machine update 6e826329b6e087 --vm-cpu-kind performance --vm-cpus 1 --vm-memory 2048 --app sidedoor-relay
+fly machine update d8d2474b122958 --vm-cpu-kind performance --vm-cpus 1 --vm-memory 2048 --app sidedoor-relay
+```
 
+Add rate limiting per subdomain to prevent one user saturating a machine's network.
+
+Cost: ~$93/month (3 × performance-1x 2GB @ $31 each).
+
+### Stage 3 — 2,000 to 10,000 concurrent users
+**More machines. More regions. Redis HA.**
+
+```bash
 # Add machines in high-demand regions
 fly machine clone e827942c0050d8 --region sin   # Singapore
 fly machine clone e827942c0050d8 --region syd   # Sydney
 fly machine clone e827942c0050d8 --region lhr   # London
 ```
 
-Add rate limiting per subdomain.
-
-Cost: ~$80–120/month.
-
-### Stage 3 — 3,000 to 20,000 concurrent users
-**Dedicated CPUs. Redis cluster. More regions.**
-
-```bash
-# Switch to dedicated CPU
-fly machine update <id> --vm-cpu-kind performance --vm-cpus 2 --vm-memory 4096
-```
-
-- Move from single Redis instance to Redis Cluster or Upstash with replication + failover
-- Implement `/api/me` on auth server (returns `{subdomain, tier, max_tunnels}`) so limits are server-enforced, not client-side
+- Move Redis to Upstash with replication + failover (removes the single point of failure)
+- Implement `/api/me` on auth server — returns `{subdomain, tier, max_tunnels}` so limits are server-enforced
 - Add admin kill endpoint for abuse control
-- Add per-subdomain rate limiting if not already done
 
-Cost: ~$300–600/month.
+Cost: ~$250–400/month (6–8 performance-1x machines + Redis HA).
 
-### Stage 4 — 20,000+ concurrent users
+### Stage 4 — 10,000+ concurrent users
 **Architectural work required.**
 
-- Evaluate replacing Redis pub/sub with a purpose-built service mesh for session routing
-- Consider multi-region Redis with consistent hashing
-- Add observability (metrics per tunnel, per machine, per region)
-- Consider dedicated machines vs shared Fly.io infrastructure for predictable latency
-- TCP tunnel support (each user gets a dedicated port — requires port pool management in Redis and Fly.io port range reservation)
+- Multi-region Redis with consistent hashing or purpose-built session routing
+- Observability: metrics per tunnel, per machine, per region
+- TCP tunnel support (port pool management in Redis + Fly.io port range reservation)
+- Evaluate moving off shared Fly.io infrastructure to dedicated hardware for largest regions
 
 Cost: $1,000+/month, depends heavily on traffic patterns.
 
