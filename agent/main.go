@@ -35,16 +35,28 @@ type Status struct {
 	Since      time.Time
 }
 
-func (s *Status) setState(state, url string) {
+func (s *Status) setState(state, url, tunnelPort string) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	// Each time we come back online after a disconnect counts as a reconnect.
 	if state == "running" && s.State != "running" && s.URL != "" {
 		s.Reconnects++
 	}
 	s.State = state
 	if url != "" {
 		s.URL = url
+	}
+	snap := map[string]any{
+		"state":      s.State,
+		"url":        s.URL,
+		"reconnects": s.Reconnects,
+		"uptime_s":   time.Since(s.Since).Seconds(),
+	}
+	s.mu.Unlock()
+	// Write to ~/.sidedoor/agent-<port>.json so the desktop can read it without polling.
+	if home, err := os.UserHomeDir(); err == nil {
+		path := filepath.Join(home, ".sidedoor", "agent-"+tunnelPort+".json")
+		if data, err := json.Marshal(snap); err == nil {
+			os.WriteFile(path, data, 0644)
+		}
 	}
 }
 
@@ -418,7 +430,7 @@ func main() {
 	pinnedMachine := ""
 	consecutiveFailures := 0
 	for {
-		status.setState("connecting", "")
+		status.setState("connecting", "", port)
 		nextMachine, err := tryConnect(relayURL, port, token, pinnedMachine, status)
 
 		if nextMachine == "replaced" {
@@ -442,11 +454,11 @@ func main() {
 		}
 
 		if consecutiveFailures == 0 {
-			status.setState("reconnecting", "")
+			status.setState("reconnecting", "", port)
 			fmt.Printf("\n  reconnecting...\n\n")
 		} else {
 			delay := backoffDuration(consecutiveFailures)
-			status.setState("reconnecting", "")
+			status.setState("reconnecting", "", port)
 			fmt.Printf("\n  reconnecting in %.0fs...\n\n", delay.Seconds())
 			time.Sleep(delay)
 		}
@@ -513,7 +525,7 @@ func tryConnect(relayURL, port, token, pinnedMachine string, status *Status) (st
 		}
 	}
 
-	status.setState("running", publicURL)
+	status.setState("running", publicURL, port)
 	fmt.Printf("  Local    http://localhost:%s\n", port)
 	fmt.Printf("  Public   %s\n", publicURL)
 	fmt.Println("\n  ctrl+c to stop\n")
