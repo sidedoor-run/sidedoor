@@ -12,11 +12,13 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/coder/websocket"
@@ -426,7 +428,17 @@ func main() {
 	status := &Status{State: "connecting", Since: time.Now()}
 	serveStatus(port, status)
 
-	fmt.Println("\n  sidedoor connecting...\n")
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		<-sigs
+		if home, err := os.UserHomeDir(); err == nil {
+			os.Remove(filepath.Join(home, ".sidedoor", "agent-"+port+".json"))
+		}
+		os.Exit(0)
+	}()
+
+	fmt.Print("\n  sidedoor connecting...\n\n")
 	pinnedMachine := ""
 	consecutiveFailures := 0
 	for {
@@ -453,13 +465,16 @@ func main() {
 			pinnedMachine = nextMachine
 		}
 
+		reconnectLabel := "reconnecting"
+		if nextMachine == "reset" {
+			reconnectLabel = "tunnel unreachable — reconnecting"
+		}
+		status.setState("reconnecting", "", port)
 		if consecutiveFailures == 0 {
-			status.setState("reconnecting", "", port)
-			fmt.Printf("\n  reconnecting...\n\n")
+			fmt.Printf("\n  %s...\n\n", reconnectLabel)
 		} else {
 			delay := backoffDuration(consecutiveFailures)
-			status.setState("reconnecting", "", port)
-			fmt.Printf("\n  reconnecting in %.0fs...\n\n", delay.Seconds())
+			fmt.Printf("\n  %s in %.0fs...\n\n", reconnectLabel, delay.Seconds())
 			time.Sleep(delay)
 		}
 	}
@@ -483,11 +498,7 @@ func tryConnect(relayURL, port, token, pinnedMachine string, status *Status) (st
 
 	netConn := newWSNetConn(ctx, wsConn)
 
-	handshake := "\n"
-	if token != "" {
-		handshake = "token:" + token + "\n"
-	}
-	if _, err := netConn.Write([]byte(handshake)); err != nil {
+	if _, err := netConn.Write([]byte("token:" + token + "\n")); err != nil {
 		wsConn.Close(websocket.StatusAbnormalClosure, "")
 		return "", err
 	}
@@ -528,43 +539,75 @@ func tryConnect(relayURL, port, token, pinnedMachine string, status *Status) (st
 	status.setState("running", publicURL, port)
 	fmt.Printf("  Local    http://localhost:%s\n", port)
 	fmt.Printf("  Public   %s\n", publicURL)
-	fmt.Println("\n  ctrl+c to stop\n")
+	fmt.Print("\n  ctrl+c to stop\n\n")
+
+	// done is closed when tryConnect returns, stopping background goroutines.
+	done := make(chan struct{})
+	defer close(done)
 
 	// WebSocket keepalive — closes the session on failure so Accept() unblocks immediately.
 	go func() {
 		t := time.NewTicker(20 * time.Second)
 		defer t.Stop()
-		for range t.C {
-			if err := wsConn.Ping(ctx); err != nil {
-				session.Close()
+		for {
+			select {
+			case <-done:
 				return
+			case <-t.C:
+				if err := wsConn.Ping(ctx); err != nil {
+					session.Close()
+					return
+				}
 			}
 		}
 	}()
 
-	// Health check — verifies the full routing path end-to-end every 30s.
+	// Health check — verifies the yamux layer then the relay routing path every 30s.
 	healthFailed := make(chan struct{}, 1)
 	go func() {
 		client := &http.Client{Timeout: 5 * time.Second}
-		time.Sleep(10 * time.Second)
+		select {
+		case <-done:
+			return
+		case <-time.After(10 * time.Second):
+		}
 		t := time.NewTicker(30 * time.Second)
 		defer t.Stop()
-		for range t.C {
-			req, err := http.NewRequest("GET", publicURL, nil)
-			if err != nil {
-				continue
-			}
-			req.Header.Set("X-Sidedoor-Health", "1")
-			resp, err := client.Do(req)
-			if err != nil {
-				continue
-			}
-			resp.Body.Close()
-			if resp.StatusCode != http.StatusOK {
-				fmt.Fprintf(os.Stderr, "\n  tunnel broken — reconnecting...\n")
-				healthFailed <- struct{}{}
-				session.Close()
+		for {
+			select {
+			case <-done:
 				return
+			case <-t.C:
+				// Verify the yamux tunnel itself is still open.
+				stream, err := session.Open()
+				if err != nil {
+					select {
+					case healthFailed <- struct{}{}:
+					default:
+					}
+					session.Close()
+					return
+				}
+				stream.Close()
+				// Verify relay still routes this subdomain to us.
+				req, err := http.NewRequest("GET", publicURL, nil)
+				if err != nil {
+					continue
+				}
+				req.Header.Set("X-Sidedoor-Health", "1")
+				resp, err := client.Do(req)
+				if err != nil {
+					continue
+				}
+				resp.Body.Close()
+				if resp.StatusCode != http.StatusOK {
+					select {
+					case healthFailed <- struct{}{}:
+					default:
+					}
+					session.Close()
+					return
+				}
 			}
 		}
 	}()
@@ -594,7 +637,7 @@ func handleStream(stream net.Conn, port string) {
 	local, err := net.DialTimeout("tcp", "localhost:"+port, 5*time.Second)
 	if err != nil {
 		log.Printf("local dial error: %v", err)
-		fmt.Fprintf(stream, "HTTP/1.1 502 Bad Gateway\r\nContent-Type: text/plain\r\nContent-Length: 26\r\n\r\nlocal server not responding")
+		fmt.Fprintf(stream, "HTTP/1.1 502 Bad Gateway\r\nContent-Type: text/plain\r\nContent-Length: 27\r\n\r\nlocal server not responding")
 		return
 	}
 	defer local.Close()

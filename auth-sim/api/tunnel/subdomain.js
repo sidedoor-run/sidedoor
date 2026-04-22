@@ -9,8 +9,11 @@ module.exports = function handler(req, res) {
     return res.status(401).json({ error: 'invalid_token' })
   }
 
+  const maxTunnels = parseInt(process.env.SIM_MAX_TUNNELS || '1', 10)
+
   res.json({
     subdomain: process.env.SIM_SUBDOMAIN || 'jonathan',
     domain: process.env.SIM_DOMAIN || 'sidedoor.run',
+    max_tunnels: maxTunnels,
   })
 }
