@@ -23,7 +23,6 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/hashicorp/yamux"
-	"github.com/zalando/go-keyring"
 )
 
 var version = "dev"
@@ -125,8 +124,53 @@ func (c *wsNetConn) SetWriteDeadline(_ time.Time) error { return nil }
 
 // ---- Auth helpers ----
 
-const keychainService = "sidedoor"
-const keychainUser = "token"
+// keychainGet/Set/Delete use the macOS `security` CLI on darwin and
+// `secret-tool` on Linux. Both work without CGo or entitlements.
+// On unsupported platforms the token falls back to the legacy file.
+
+func keychainGet() (string, error) {
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "darwin":
+		cmd = exec.Command("security", "find-generic-password", "-s", "sidedoor", "-a", "token", "-w")
+	case "linux":
+		cmd = exec.Command("secret-tool", "lookup", "service", "sidedoor", "account", "token")
+	default:
+		return "", fmt.Errorf("unsupported")
+	}
+	out, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+func keychainSet(token string) error {
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "darwin":
+		cmd = exec.Command("security", "add-generic-password", "-U", "-s", "sidedoor", "-a", "token", "-w", token)
+	case "linux":
+		cmd = exec.Command("secret-tool", "store", "--label=sidedoor token", "service", "sidedoor", "account", "token")
+		cmd.Stdin = strings.NewReader(token)
+	default:
+		return fmt.Errorf("unsupported")
+	}
+	return cmd.Run()
+}
+
+func keychainDelete() error {
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "darwin":
+		cmd = exec.Command("security", "delete-generic-password", "-s", "sidedoor", "-a", "token")
+	case "linux":
+		cmd = exec.Command("secret-tool", "clear", "service", "sidedoor", "account", "token")
+	default:
+		return fmt.Errorf("unsupported")
+	}
+	return cmd.Run()
+}
 
 func legacyTokenPath() string {
 	home, _ := os.UserHomeDir()
@@ -142,13 +186,14 @@ func loadToken() string {
 		if b, err := os.ReadFile(path); err == nil {
 			token := strings.TrimSpace(string(b))
 			if token != "" {
-				_ = keyring.Set(keychainService, keychainUser, token)
-				_ = os.Remove(path)
+				if keychainSet(token) == nil {
+					_ = os.Remove(path)
+				}
 				return token
 			}
 		}
 	}
-	token, err := keyring.Get(keychainService, keychainUser)
+	token, err := keychainGet()
 	if err != nil {
 		return ""
 	}
@@ -156,7 +201,7 @@ func loadToken() string {
 }
 
 func saveToken(token string) error {
-	return keyring.Set(keychainService, keychainUser, token)
+	return keychainSet(token)
 }
 
 func authURL() string {
@@ -249,15 +294,9 @@ func runAuth() {
 }
 
 func runLogout() {
-	err := keyring.Delete(keychainService, keychainUser)
-	if err != nil && err != keyring.ErrNotFound {
-		// Also clean up any leftover legacy file.
-		_ = os.Remove(legacyTokenPath())
-		fmt.Fprintf(os.Stderr, "  error: %v\n", err)
-		os.Exit(1)
-	}
+	err := keychainDelete()
 	_ = os.Remove(legacyTokenPath())
-	if err == keyring.ErrNotFound {
+	if err != nil {
 		fmt.Println("  not logged in")
 		return
 	}
