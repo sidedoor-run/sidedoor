@@ -13,15 +13,13 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: 'agent/go.mod'
-      - name: build and sign darwin binaries
+      - name: build darwin binaries
         run: |
           TAG=${GITHUB_REF_NAME#v}
           mkdir -p dist
           cd agent
-          CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -ldflags="-s -w -X main.version=${TAG}" -o ../dist/sidedoor_darwin_amd64
-          CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -ldflags="-s -w -X main.version=${TAG}" -o ../dist/sidedoor_darwin_arm64
-          codesign --sign - ../dist/sidedoor_darwin_amd64
-          codesign --sign - ../dist/sidedoor_darwin_arm64
+          GOOS=darwin GOARCH=amd64 go build -ldflags="-s -w -X main.version=${TAG}" -o ../dist/sidedoor_darwin_amd64
+          GOOS=darwin GOARCH=arm64 go build -ldflags="-s -w -X main.version=${TAG}" -o ../dist/sidedoor_darwin_arm64
       - uses: actions/upload-artifact@v4
         with:
           name: darwin-binaries
