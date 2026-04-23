@@ -23,6 +23,7 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/hashicorp/yamux"
+	"github.com/zalando/go-keyring"
 )
 
 var version = "dev"
@@ -124,7 +125,10 @@ func (c *wsNetConn) SetWriteDeadline(_ time.Time) error { return nil }
 
 // ---- Auth helpers ----
 
-func tokenPath() string {
+const keychainService = "sidedoor"
+const keychainUser = "token"
+
+func legacyTokenPath() string {
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".sidedoor", "token")
 }
@@ -133,19 +137,26 @@ func loadToken() string {
 	if t := os.Getenv("SIDEDOOR_TOKEN"); t != "" {
 		return t
 	}
-	b, err := os.ReadFile(tokenPath())
+	// Migrate plaintext file to keychain on first use.
+	if path := legacyTokenPath(); path != "" {
+		if b, err := os.ReadFile(path); err == nil {
+			token := strings.TrimSpace(string(b))
+			if token != "" {
+				_ = keyring.Set(keychainService, keychainUser, token)
+				_ = os.Remove(path)
+				return token
+			}
+		}
+	}
+	token, err := keyring.Get(keychainService, keychainUser)
 	if err != nil {
 		return ""
 	}
-	return strings.TrimSpace(string(b))
+	return token
 }
 
 func saveToken(token string) error {
-	path := tokenPath()
-	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
-		return err
-	}
-	return os.WriteFile(path, []byte(token), 0600)
+	return keyring.Set(keychainService, keychainUser, token)
 }
 
 func authURL() string {
@@ -238,14 +249,17 @@ func runAuth() {
 }
 
 func runLogout() {
-	path := tokenPath()
-	if err := os.Remove(path); err != nil {
-		if os.IsNotExist(err) {
-			fmt.Println("  not logged in")
-			return
-		}
+	err := keyring.Delete(keychainService, keychainUser)
+	if err != nil && err != keyring.ErrNotFound {
+		// Also clean up any leftover legacy file.
+		_ = os.Remove(legacyTokenPath())
 		fmt.Fprintf(os.Stderr, "  error: %v\n", err)
 		os.Exit(1)
+	}
+	_ = os.Remove(legacyTokenPath())
+	if err == keyring.ErrNotFound {
+		fmt.Println("  not logged in")
+		return
 	}
 	fmt.Println("  logged out")
 }
