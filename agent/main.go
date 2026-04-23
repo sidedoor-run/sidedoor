@@ -443,6 +443,12 @@ func main() {
 		os.Exit(0)
 	}()
 
+	if c, err := net.DialTimeout("tcp", "localhost:"+port, 500*time.Millisecond); err != nil {
+		fmt.Fprintf(os.Stderr, "  ⚠  nothing detected on port %s — tunnel will be unavailable until your service starts\n\n", port)
+	} else {
+		c.Close()
+	}
+
 	fmt.Print("\n  sidedoor connecting...\n\n")
 	pinnedMachine := ""
 	consecutiveFailures := 0
