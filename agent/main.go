@@ -27,6 +27,8 @@ import (
 
 var version = "dev"
 
+var errFatal = errors.New("fatal")
+
 // ---- Connection status (shared between connect loop and status server) ----
 
 type Status struct {
@@ -128,6 +130,9 @@ func tokenPath() string {
 }
 
 func loadToken() string {
+	if t := os.Getenv("SIDEDOOR_TOKEN"); t != "" {
+		return t
+	}
 	b, err := os.ReadFile(tokenPath())
 	if err != nil {
 		return ""
@@ -451,7 +456,7 @@ func main() {
 		}
 
 		if err != nil {
-			if err.Error() == "fatal" {
+			if errors.Is(err, errFatal) {
 				os.Exit(1)
 			}
 			consecutiveFailures++
@@ -459,7 +464,7 @@ func main() {
 			consecutiveFailures = 0
 		}
 
-		if nextMachine == "reset" {
+		if nextMachine == "reset" || consecutiveFailures >= 5 {
 			pinnedMachine = ""
 		} else if nextMachine != "" {
 			pinnedMachine = nextMachine
@@ -514,7 +519,7 @@ func tryConnect(relayURL, port, token, pinnedMachine string, status *Status) (st
 	if strings.HasPrefix(msg, "error:") {
 		fmt.Fprintf(os.Stderr, "  error: %s\n", strings.TrimPrefix(msg, "error:"))
 		wsConn.Close(websocket.StatusNormalClosure, "")
-		return "", fmt.Errorf("fatal")
+		return "", errFatal
 	}
 
 	cfg := yamux.DefaultConfig()
@@ -657,11 +662,4 @@ func backoffDuration(attempt int) time.Duration {
 		d = 30 * time.Second
 	}
 	return d
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }
