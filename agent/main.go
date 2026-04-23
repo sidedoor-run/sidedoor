@@ -498,7 +498,7 @@ func tryConnect(relayURL, port, token, pinnedMachine string, status *Status) (st
 
 	netConn := newWSNetConn(ctx, wsConn)
 
-	if _, err := netConn.Write([]byte("token:" + token + "\n")); err != nil {
+	if _, err := netConn.Write([]byte("token:" + token + " port:" + port + "\n")); err != nil {
 		wsConn.Close(websocket.StatusAbnormalClosure, "")
 		return "", err
 	}
