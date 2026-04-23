@@ -31,7 +31,18 @@ function download() {
         if (res.statusCode === 301 || res.statusCode === 302) return get(res.headers.location)
         if (res.statusCode !== 200) return reject(new Error(`HTTP ${res.statusCode} downloading binary`))
         res.pipe(file)
-        file.on('finish', () => { file.close(); chmodSync(BIN_PATH, 0o755); resolve() })
+        file.on('finish', () => {
+          file.close()
+          chmodSync(BIN_PATH, 0o755)
+          // macOS Sequoia sets com.apple.provenance/quarantine on files created
+          // by network I/O, which causes Gatekeeper to SIGKILL the binary at
+          // startup even without the quarantine flag. Strip both attributes.
+          if (PLATFORM === 'darwin') {
+            spawnSync('xattr', ['-d', 'com.apple.quarantine', BIN_PATH], { stdio: 'ignore' })
+            spawnSync('xattr', ['-d', 'com.apple.provenance', BIN_PATH], { stdio: 'ignore' })
+          }
+          resolve()
+        })
       }).on('error', reject)
     }
     get(url)
