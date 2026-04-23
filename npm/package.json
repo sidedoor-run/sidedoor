@@ -1,6 +1,6 @@
 {
   "name": "@sidedoor/cli",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Open a sidedoor to your localhost.",
   "bin": {
     "sidedoor": "./index.js"
