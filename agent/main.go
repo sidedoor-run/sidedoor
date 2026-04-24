@@ -204,6 +204,12 @@ func saveToken(token string) error {
 	return keychainSet(token)
 }
 
+func touchAuthSentinel() {
+	home, _ := os.UserHomeDir()
+	path := filepath.Join(home, ".sidedoor", ".auth")
+	os.WriteFile(path, nil, 0600)
+}
+
 func authURL() string {
 	if u := os.Getenv("SIDEDOOR_AUTH_URL"); u != "" {
 		return u
@@ -282,6 +288,7 @@ func runAuth() {
 				fmt.Fprintf(os.Stderr, "\n  error saving token: %v\n\n", err)
 				os.Exit(1)
 			}
+			touchAuthSentinel()
 			fmt.Printf("  Authenticated. You're all set.\n\n")
 			return
 		}
@@ -296,6 +303,7 @@ func runAuth() {
 func runLogout() {
 	err := keychainDelete()
 	_ = os.Remove(legacyTokenPath())
+	touchAuthSentinel()
 	if err != nil {
 		fmt.Println("  not logged in")
 		return
