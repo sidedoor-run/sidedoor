@@ -63,9 +63,9 @@ TTL: 90s, refreshed every 30s by relay keepalive goroutine
 Vercel serverless deployment. Handles:
 - `POST /api/oauth/device/code` — issues device code + user code
 - `POST /api/oauth/device/token` — polls for token, returns JWT on approval
-- `GET /api/tunnel/subdomain` — returns `{subdomain, domain}` for authenticated token
+- `GET /api/tunnel/subdomain` — returns `{subdomain, domain, max_tunnels}` for authenticated token
 
-Subdomains are assigned per account token. One subdomain per account — all tunnels from the same account share the same public base URL.
+Subdomains are assigned per account token. Each port gets a unique URL: `<base>-<port>.<domain>` (e.g. `papita-3000.sidedoor.pink`). `max_tunnels` controls how many concurrent tunnels that account may open; the relay defaults to 1 if the field is absent or zero.
 
 ---
 

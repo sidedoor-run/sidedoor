@@ -45,12 +45,22 @@ Relay process (GRU / IAD / FRA)
 ## Connection protocol
 
 ```
-Agent → relay:  token:<jwt>\n
+Agent → relay:  token:<jwt> port:<portnum>\n   (port omitted by pre-multiport agents)
 Relay → agent:  ok:https://<sub>.<domain>|machine:<fly-machine-id>\n   (success)
 Relay → agent:  error:<message>\n                                        (failure)
 ```
 
 Both sides then wrap the WebSocket in yamux. The relay opens one yamux stream per inbound HTTP request. The agent accepts streams and proxies each to `localhost:<port>`.
+
+The relay is the yamux server; the agent is the yamux client. The relay opens streams inward (one per HTTP request); the agent accepts them. The agent also opens a single stream every 30 s during its health check to verify the yamux layer — the relay accepts these and closes them immediately.
+
+---
+
+## Subdomain assignment
+
+Each port on an account gets a unique subdomain: `<base>-<port>.<domain>` (e.g. `papita-3000.sidedoor.pink`). The base subdomain is assigned per account by the auth server. Agents that predate the multiport protocol (those that omit `port:` in the handshake) fall back to the bare base subdomain.
+
+The relay enforces a per-account tunnel limit via `max_tunnels` returned by the auth server. Same-subdomain reconnects always succeed (they displace the old session). New subdomains are rejected when the account is at its limit.
 
 ---
 
@@ -95,9 +105,21 @@ The agent hits its own public URL with `X-Sidedoor-Health: 1` every 30s. The rel
 
 ## File locations (per user machine)
 
-| File | Written by | Purpose |
+| File / Store | Written by | Purpose |
 |---|---|---|
-| `~/.sidedoor/token` | Agent (`sidedoor auth`) | JWT — 0600 permissions |
+| macOS Keychain (`sidedoor / token`) | Agent (`sidedoor auth`) | JWT — primary token store |
+| Linux secret-tool (`service=sidedoor`) | Agent (`sidedoor auth`) | JWT — primary token store on Linux |
+| `~/.sidedoor/token` | Legacy — migrated to keychain on first use | JWT plaintext fallback (auto-deleted after migration) |
 | `~/.sidedoor/mcp-state.json` | MCP server + desktop app | Active tunnel registry for external consumers |
 | `~/.sidedoor/agent-<port>.json` | Agent | Live connection state for desktop app |
 | `~/.sidedoor/bin/sidedoor` | npm wrapper | Versioned Go binary |
+
+---
+
+## Environment variable overrides (agent)
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `SIDEDOOR_TOKEN` | — | Use this JWT instead of the keychain/token file |
+| `SIDEDOOR_RELAY` | `wss://sidedoor.run/sidedoor/connect` | Override relay WebSocket endpoint |
+| `SIDEDOOR_AUTH_URL` | `https://sidedoor-eight.vercel.app` | Override auth server base URL |

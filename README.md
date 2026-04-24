@@ -91,7 +91,7 @@ A menu bar app shows all running tunnels — whether started from the terminal, 
 
 ## Auth
 
-sidedoor uses device-flow OAuth. Run `sidedoor auth`, approve in the browser, and your token is saved to `~/.sidedoor/token`. Run `sidedoor logout` to remove it.
+sidedoor uses device-flow OAuth. Run `sidedoor auth`, approve in the browser, and your token is saved to the system keychain (macOS Keychain / Linux secret-tool). Run `sidedoor logout` to remove it.
 
 ---
 
