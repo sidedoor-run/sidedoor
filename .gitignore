@@ -1,6 +1,6 @@
 relay/
 mcp/
-desktop/
+/desktop/
 fly.toml
 node_modules/
 dist/
