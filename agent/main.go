@@ -204,6 +204,48 @@ func saveToken(token string) error {
 	return keychainSet(token)
 }
 
+func checkCLIVersion() (latest, required string) {
+	base := authURL()
+	req, err := http.NewRequest("GET", base+"/api/cli/version", nil)
+	if err != nil {
+		return "", ""
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	req = req.WithContext(ctx)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil || resp.StatusCode != 200 {
+		return "", ""
+	}
+	defer resp.Body.Close()
+	var result struct {
+		Version  string `json:"version"`
+		Required string `json:"required"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", ""
+	}
+	return result.Version, result.Required
+}
+
+func versionLessThan(a, b string) bool {
+	pa := strings.Split(a, ".")
+	pb := strings.Split(b, ".")
+	for i := 0; i < len(pa) || i < len(pb); i++ {
+		var ai, bi int
+		if i < len(pa) {
+			fmt.Sscanf(pa[i], "%d", &ai)
+		}
+		if i < len(pb) {
+			fmt.Sscanf(pb[i], "%d", &bi)
+		}
+		if ai != bi {
+			return ai < bi
+		}
+	}
+	return false
+}
+
 func touchAuthSentinel() {
 	home, _ := os.UserHomeDir()
 	path := filepath.Join(home, ".sidedoor", ".auth")
@@ -510,12 +552,39 @@ func main() {
 		c.Close()
 	}
 
+	// Check for updates in the background — prints notice after tunnel is live.
+	versionNoticeCh := make(chan string, 1)
+	go func() {
+		latest, required := checkCLIVersion()
+		if latest == "" || !versionLessThan(version, latest) {
+			versionNoticeCh <- ""
+			return
+		}
+		if versionLessThan(version, required) {
+			fmt.Fprintf(os.Stderr, "\n  sidedoor v%s is required — run: npm update -g @sidedoor/cli\n\n", latest)
+			os.Exit(1)
+		}
+		versionNoticeCh <- fmt.Sprintf("  ⚠  sidedoor v%s available — run: npm update -g @sidedoor/cli\n", latest)
+	}()
+
 	fmt.Print("\n  sidedoor connecting...\n\n")
 	pinnedMachine := ""
 	consecutiveFailures := 0
+	noticePrinted := false
 	for {
 		status.setState("connecting", "", port)
 		nextMachine, err := tryConnect(relayURL, port, token, pinnedMachine, status)
+
+		if !noticePrinted {
+			select {
+			case notice := <-versionNoticeCh:
+				if notice != "" {
+					fmt.Print(notice)
+				}
+				noticePrinted = true
+			default:
+			}
+		}
 
 		if nextMachine == "replaced" {
 			fmt.Fprintf(os.Stderr, "\n  another sidedoor session started for this account — stopping\n\n")

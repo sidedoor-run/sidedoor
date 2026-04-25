@@ -8,4 +8,4 @@ dist/
 .DS_Store
 agent/sidedoor
 agent/agent
-cli/
+/cli/
