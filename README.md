@@ -27,14 +27,14 @@ npm install -g @sidedoor/cli
 # Authenticate once
 sidedoor auth
 
-# Share a local port
+# Share a local HTTP port
 sidedoor 3000
 
 # Stop
 ctrl+c
 ```
 
-Any port works — dev servers, APIs, whatever is running locally.
+Any HTTP port works — dev servers, APIs, whatever is running locally.
 
 ---
 

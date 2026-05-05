@@ -95,7 +95,7 @@ Cost: ~$250–400/month (6–8 performance-1x machines + Redis HA).
 
 - Multi-region Redis with consistent hashing or purpose-built session routing
 - Observability: metrics per tunnel, per machine, per region
-- TCP tunnel support (port pool management in Redis + Fly.io port range reservation)
+- TCP tunnel support on a separate L4 relay fleet (planned for Hetzner, not the Fly HTTP relay)
 - Evaluate moving off shared Fly.io infrastructure to dedicated hardware for largest regions
 
 Cost: $1,000+/month, depends heavily on traffic patterns.
@@ -133,7 +133,7 @@ fly logs --app sidedoor-relay
 | Capability | playit.gg | sidedoor | When it matters |
 |---|---|---|---|
 | UDP tunnels | ✓ | ✗ | Game servers, VoIP |
-| TCP tunnels (non-HTTP) | ✓ | ✗ (planned) | SSH, databases |
+| TCP tunnels (non-HTTP) | ✓ | ✗ (planned via separate Hetzner relay) | SSH, databases |
 | 19 dedicated datacenters | ✓ | 3 Fly.io machines | Sub-50ms latency globally |
 | DDoS protection (gaming) | ✓ | ✗ | Minecraft-scale attacks |
 | MCP / AI integration | ✗ | ✓ | AI-assisted dev workflows |

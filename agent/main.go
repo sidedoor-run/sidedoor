@@ -37,7 +37,6 @@ type Status struct {
 	URL        string
 	Reconnects int
 	Since      time.Time
-	TCPMode    bool
 }
 
 func (s *Status) setState(state, url, tunnelPort string) {
@@ -389,10 +388,6 @@ func serveStatus(tunnelPort string, status *Status) {
 		_, surl, _, _ := status.snapshot()
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		if status.TCPMode {
-			json.NewEncoder(w).Encode(map[string]any{"ok": nil, "note": "TCP tunnel"})
-			return
-		}
 		if surl == "" {
 			json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": "not connected"})
 			return
@@ -500,7 +495,6 @@ pollStatus();pollProbe();
 func main() {
 	if len(os.Args) < 2 {
 		fmt.Fprintln(os.Stderr, "usage: sidedoor <port>")
-		fmt.Fprintln(os.Stderr, "       sidedoor --tcp <port>")
 		fmt.Fprintln(os.Stderr, "       sidedoor auth")
 		fmt.Fprintln(os.Stderr, "       sidedoor logout")
 		os.Exit(1)
@@ -521,16 +515,12 @@ func main() {
 		return
 	}
 
-	var tcpMode bool
-	port := os.Args[1]
-	if port == "--tcp" {
-		if len(os.Args) < 3 {
-			fmt.Fprintln(os.Stderr, "  usage: sidedoor --tcp <port>")
-			os.Exit(1)
-		}
-		tcpMode = true
-		port = os.Args[2]
+	if os.Args[1] == "--tcp" {
+		fmt.Fprintln(os.Stderr, "  error: TCP tunnels are moving to a separate relay and are not available in this build")
+		os.Exit(1)
 	}
+
+	port := os.Args[1]
 
 	if _, err := fmt.Sscanf(port, "%d", new(int)); err != nil {
 		fmt.Fprintf(os.Stderr, "  error: '%s' is not a valid port number\n", port)
@@ -549,7 +539,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	status := &Status{State: "connecting", Since: time.Now(), TCPMode: tcpMode}
+	status := &Status{State: "connecting", Since: time.Now()}
 	serveStatus(port, status)
 
 	sigs := make(chan os.Signal, 1)
@@ -589,7 +579,7 @@ func main() {
 	noticePrinted := false
 	for {
 		status.setState("connecting", "", port)
-		nextMachine, err := tryConnect(relayURL, port, token, pinnedMachine, tcpMode, status)
+		nextMachine, err := tryConnect(relayURL, port, token, pinnedMachine, status)
 
 		if !noticePrinted {
 			select {
@@ -637,7 +627,7 @@ func main() {
 	}
 }
 
-func tryConnect(relayURL, port, token, pinnedMachine string, tcpMode bool, status *Status) (string, error) {
+func tryConnect(relayURL, port, token, pinnedMachine string, status *Status) (string, error) {
 	ctx := context.Background()
 
 	dialOpts := &websocket.DialOptions{
@@ -656,9 +646,6 @@ func tryConnect(relayURL, port, token, pinnedMachine string, tcpMode bool, statu
 	netConn := newWSNetConn(ctx, wsConn)
 
 	handshake := "token:" + token + " port:" + port
-	if tcpMode {
-		handshake += " tcp:true"
-	}
 	if _, err := netConn.Write([]byte(handshake + "\n")); err != nil {
 		wsConn.Close(websocket.StatusAbnormalClosure, "")
 		return "", err
@@ -698,11 +685,7 @@ func tryConnect(relayURL, port, token, pinnedMachine string, tcpMode bool, statu
 	}
 
 	status.setState("running", publicURL, port)
-	if tcpMode {
-		fmt.Printf("  Local    localhost:%s\n", port)
-	} else {
-		fmt.Printf("  Local    http://localhost:%s\n", port)
-	}
+	fmt.Printf("  Local    http://localhost:%s\n", port)
 	fmt.Printf("  Public   %s\n", publicURL)
 	fmt.Print("\n  ctrl+c to stop\n\n")
 
@@ -728,9 +711,7 @@ func tryConnect(relayURL, port, token, pinnedMachine string, tcpMode bool, statu
 	}()
 
 	// Health check — verifies the yamux layer then the relay routing path every 30s.
-	// Not applicable for TCP tunnels (no HTTP endpoint to probe).
 	healthFailed := make(chan struct{}, 1)
-	if !tcpMode {
 	go func() {
 		client := &http.Client{Timeout: 5 * time.Second}
 		select {
@@ -778,14 +759,13 @@ func tryConnect(relayURL, port, token, pinnedMachine string, tcpMode bool, statu
 			}
 		}
 	}()
-	} // end if !tcpMode
 
 	for {
 		stream, err := session.Accept()
 		if err != nil {
 			break
 		}
-		go handleStream(stream, port, tcpMode)
+		go handleStream(stream, port)
 	}
 
 	select {
@@ -799,15 +779,13 @@ func tryConnect(relayURL, port, token, pinnedMachine string, tcpMode bool, statu
 	return machineID, nil
 }
 
-func handleStream(stream net.Conn, port string, tcpMode bool) {
+func handleStream(stream net.Conn, port string) {
 	defer stream.Close()
 
 	local, err := net.DialTimeout("tcp", "localhost:"+port, 5*time.Second)
 	if err != nil {
 		log.Printf("local dial error: %v", err)
-		if !tcpMode {
-			fmt.Fprintf(stream, "HTTP/1.1 502 Bad Gateway\r\nContent-Type: text/plain\r\nContent-Length: 27\r\n\r\nlocal server not responding")
-		}
+		fmt.Fprintf(stream, "HTTP/1.1 502 Bad Gateway\r\nContent-Type: text/plain\r\nContent-Length: 27\r\n\r\nlocal server not responding")
 		return
 	}
 	defer local.Close()
