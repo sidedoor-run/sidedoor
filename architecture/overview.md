@@ -58,9 +58,15 @@ The relay is the yamux server; the agent is the yamux client. The relay opens st
 
 ## Subdomain assignment
 
-Each port on an account gets a unique subdomain: `<base>-<port>.<domain>` (e.g. `papita-3000.sidedoor.pink`). The base subdomain is assigned per account by the auth server. Agents that predate the multiport protocol (those that omit `port:` in the handshake) fall back to the bare base subdomain.
+The auth server owns public URL assignment. The relay uses the returned `{subdomain, domain}` directly and does not append the local port. For example, an authenticated tunnel for `jonathan` on `sidedoor.green` is `https://jonathan.sidedoor.green`, regardless of whether the local port is 3000, 5173, or 8080.
 
-The relay enforces a per-account tunnel limit via `max_tunnels` returned by the auth server. Same-subdomain reconnects always succeed (they displace the old session). New subdomains are rejected when the account is at its limit.
+Planned tier policy:
+- Free without auth: random subdomain on `sidedoor.free`
+- Free with auth: chosen subdomain on `sidedoor.free`
+- Tier 1 paid: one chosen subdomain on one color domain
+- Tier 2 paid: up to three chosen subdomains across three color domains
+
+The relay enforces account tunnel limits via `max_tunnels` returned by the auth server. Same-subdomain reconnects always succeed and displace the old session.
 
 ---
 
