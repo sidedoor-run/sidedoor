@@ -32,11 +32,14 @@ var errFatal = errors.New("fatal")
 // ---- Connection status (shared between connect loop and status server) ----
 
 type Status struct {
-	mu         sync.Mutex
-	State      string
-	URL        string
-	Reconnects int
-	Since      time.Time
+	mu             sync.Mutex
+	State          string
+	URL            string
+	Reconnects     int
+	Since          time.Time
+	LocalState     string
+	LocalError     string
+	LocalLatencyMS int64
 }
 
 func (s *Status) setState(state, url, tunnelPort string) {
@@ -48,13 +51,44 @@ func (s *Status) setState(state, url, tunnelPort string) {
 	if url != "" {
 		s.URL = url
 	}
-	snap := map[string]any{
-		"state":      s.State,
-		"url":        s.URL,
-		"reconnects": s.Reconnects,
-		"uptime_s":   time.Since(s.Since).Seconds(),
-	}
+	snap := s.snapshotLocked()
 	s.mu.Unlock()
+	writeStatusFile(tunnelPort, snap)
+}
+
+func (s *Status) setLocal(state, localErr string, latencyMS int64, tunnelPort string) {
+	s.mu.Lock()
+	s.LocalState = state
+	s.LocalError = localErr
+	s.LocalLatencyMS = latencyMS
+	snap := s.snapshotLocked()
+	s.mu.Unlock()
+	writeStatusFile(tunnelPort, snap)
+}
+
+func (s *Status) snapshotLocked() map[string]any {
+	localState := s.LocalState
+	if localState == "" {
+		localState = "unknown"
+	}
+	return map[string]any{
+		"state":            s.State,
+		"url":              s.URL,
+		"reconnects":       s.Reconnects,
+		"uptime_s":         time.Since(s.Since).Seconds(),
+		"local_state":      localState,
+		"local_error":      s.LocalError,
+		"local_latency_ms": s.LocalLatencyMS,
+	}
+}
+
+func (s *Status) snapshot() map[string]any {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.snapshotLocked()
+}
+
+func writeStatusFile(tunnelPort string, snap map[string]any) {
 	// Write to ~/.sidedoor/agent-<port>.json so the desktop can read it without polling.
 	if home, err := os.UserHomeDir(); err == nil {
 		path := filepath.Join(home, ".sidedoor", "agent-"+tunnelPort+".json")
@@ -62,12 +96,6 @@ func (s *Status) setState(state, url, tunnelPort string) {
 			os.WriteFile(path, data, 0644)
 		}
 	}
-}
-
-func (s *Status) snapshot() (state, surl string, reconnects int, uptimeSec float64) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.State, s.URL, s.Reconnects, time.Since(s.Since).Seconds()
 }
 
 // ---- WebSocket net.Conn adapter ----
@@ -364,6 +392,45 @@ func statusPort(tunnelPort string) int {
 	return sp
 }
 
+func probeLocalHTTP(port string, timeout time.Duration) (state, message string, latencyMS int64) {
+	transport := &http.Transport{
+		Proxy:             nil,
+		DisableKeepAlives: true,
+	}
+	client := &http.Client{
+		Timeout:   timeout,
+		Transport: transport,
+	}
+	start := time.Now()
+	resp, err := client.Get("http://localhost:" + port + "/")
+	latencyMS = time.Since(start).Milliseconds()
+	if err == nil {
+		resp.Body.Close()
+		return "responding", "", latencyMS
+	}
+
+	msg := err.Error()
+	var netErr net.Error
+	switch {
+	case errors.As(err, &netErr) && netErr.Timeout():
+		return "not_responding", "local app accepted the request but did not send HTTP response headers", latencyMS
+	case strings.Contains(msg, "connection refused"):
+		return "not_listening", "nothing is listening on localhost:" + port, latencyMS
+	case strings.Contains(msg, "malformed HTTP response"):
+		return "not_http", "localhost:" + port + " is listening, but it did not speak HTTP", latencyMS
+	default:
+		return "error", msg, latencyMS
+	}
+}
+
+func monitorLocalHTTP(port string, status *Status) {
+	for {
+		state, msg, latency := probeLocalHTTP(port, 3*time.Second)
+		status.setLocal(state, msg, latency, port)
+		time.Sleep(10 * time.Second)
+	}
+}
+
 func serveStatus(tunnelPort string, status *Status) {
 	sp := statusPort(tunnelPort)
 	addr := fmt.Sprintf("localhost:%d", sp)
@@ -371,21 +438,16 @@ func serveStatus(tunnelPort string, status *Status) {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/api/status", func(w http.ResponseWriter, r *http.Request) {
-		state, surl, reconnects, uptime := status.snapshot()
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		json.NewEncoder(w).Encode(map[string]any{
-			"state":      state,
-			"url":        surl,
-			"reconnects": reconnects,
-			"uptime_s":   uptime,
-		})
+		json.NewEncoder(w).Encode(status.snapshot())
 	})
 
 	// Probes the tunnel end-to-end using the health-check shortcut so no local
 	// server is needed. Returns latency and ok/fail for the dashboard history.
 	mux.HandleFunc("/api/probe", func(w http.ResponseWriter, r *http.Request) {
-		_, surl, _, _ := status.snapshot()
+		snap := status.snapshot()
+		surl, _ := snap["url"].(string)
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		if surl == "" {
@@ -454,6 +516,7 @@ h1{font-size:13px;font-weight:600;color:#555;letter-spacing:.08em;text-transform
   <div class="stats">
     <div class="stat"><strong id="uptime">—</strong>uptime</div>
     <div class="stat"><strong id="reconnects">—</strong>reconnects</div>
+    <div class="stat"><strong id="local">—</strong>local app</div>
     <div class="stat"><strong id="latency">—</strong>latency</div>
   </div>
   <div class="hist-label">last 60 probes · 2s interval</div>
@@ -472,6 +535,10 @@ async function pollStatus(){
     const s=Math.floor(d.uptime_s),m=Math.floor(s/60);
     document.getElementById('uptime').textContent=m>0?m+'m '+(s%60)+'s':s+'s';
     document.getElementById('reconnects').textContent=d.reconnects;
+    const localMap={responding:'OK',not_listening:'down',not_responding:'stuck',not_http:'not HTTP',unknown:'—',error:'error'};
+    const local=document.getElementById('local');
+    local.textContent=localMap[d.local_state]||d.local_state||'—';
+    local.title=d.local_error||'';
   }catch{}
 }
 async function pollProbe(){
@@ -552,11 +619,20 @@ func main() {
 		os.Exit(0)
 	}()
 
-	if c, err := net.DialTimeout("tcp", "localhost:"+port, 500*time.Millisecond); err != nil {
-		fmt.Fprintf(os.Stderr, "  ⚠  nothing detected on port %s — tunnel will be unavailable until your service starts\n\n", port)
-	} else {
-		c.Close()
+	localState, localMsg, latency := probeLocalHTTP(port, 1500*time.Millisecond)
+	status.setLocal(localState, localMsg, latency, port)
+	switch localState {
+	case "responding":
+	case "not_listening":
+		fmt.Fprintf(os.Stderr, "  warning: nothing is listening on localhost:%s — the tunnel will stay online and recover when your app starts\n\n", port)
+	case "not_responding":
+		fmt.Fprintf(os.Stderr, "  warning: localhost:%s accepts connections but did not return HTTP headers — public requests may return 504 until it responds\n\n", port)
+	case "not_http":
+		fmt.Fprintf(os.Stderr, "  warning: localhost:%s is listening but does not appear to speak HTTP\n\n", port)
+	default:
+		fmt.Fprintf(os.Stderr, "  warning: local app check failed: %s\n\n", localMsg)
 	}
+	go monitorLocalHTTP(port, status)
 
 	// Check for updates in the background — prints notice after tunnel is live.
 	versionNoticeCh := make(chan string, 1)
